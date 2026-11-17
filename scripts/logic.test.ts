@@ -9,6 +9,14 @@ import {
   pickWeightedIndex,
 } from "../src/lib/rewards";
 import { isValidSlug, isValidVisitorId, todayInDhaka } from "../src/lib/validation";
+import {
+  daysLeft,
+  isPaymentMethod,
+  isPlan,
+  isValidEmail,
+  monthlyRecurringRevenue,
+  subscriptionState,
+} from "../src/lib/plans";
 import { SEGMENTS, segmentUnderPointer, targetRotation } from "../src/lib/wheel";
 
 // 1) চাকা সবসময় ঠিক segment-এ থামে (যেকোনো শুরুর কোণ ও jitter-এ)
@@ -79,5 +87,35 @@ assert.equal(isValidSlug("sampan"), true);
 assert.equal(isValidSlug("Bad Slug"), false);
 assert.equal(isValidVisitorId("short"), false);
 console.log("✓ ref code, ঢাকার তারিখ, ইনপুট যাচাই");
+
+// 6) প্ল্যান, সাবস্ক্রিপশন অবস্থা, MRR
+const NOW = new Date("2026-11-17T06:00:00Z");
+const inDays = (d: number) => new Date(NOW.getTime() + d * 86_400_000).toISOString();
+const sub = (is_active: boolean, days: number, payments_count: number) =>
+  subscriptionState({ is_active, service_until: inDays(days), payments_count }, NOW);
+
+assert.equal(sub(true, 10, 0), "trial");
+assert.equal(sub(true, 3, 0), "trial", "ট্রায়ালে শেষের দিকেও 'trial'");
+assert.equal(sub(true, 30, 2), "active");
+assert.equal(sub(true, 7, 2), "expiring");
+assert.equal(sub(true, 7.01, 2), "active");
+assert.equal(sub(true, 0, 2), "expired", "মেয়াদ ঠিক এখনই শেষ = expired");
+assert.equal(sub(true, -5, 0), "expired");
+assert.equal(sub(false, 30, 3), "suspended", "স্থগিত সবার উপরে");
+assert.equal(sub(false, -5, 0), "suspended");
+assert.equal(daysLeft(inDays(10), NOW), 10);
+assert.equal(daysLeft(inDays(0.2), NOW), 1, "ভগ্নাংশ দিন উপরে গোল");
+assert.ok(daysLeft(inDays(-3), NOW) <= 0);
+assert.equal(monthlyRecurringRevenue({ basic: 2, standard: 1, premium: 3 }), 2 * 499 + 999 + 3 * 1999);
+assert.equal(monthlyRecurringRevenue({ basic: 0, standard: 0, premium: 0 }), 0);
+assert.equal(isValidEmail("owner@example.com"), true);
+assert.equal(isValidEmail("a b@example.com"), false);
+assert.equal(isValidEmail("no-at-sign"), false);
+assert.equal(isValidEmail("a@b"), false);
+assert.equal(isPlan("standard"), true);
+assert.equal(isPlan("gold"), false);
+assert.equal(isPaymentMethod("bkash"), true);
+assert.equal(isPaymentMethod("paypal"), false);
+console.log("✓ plans: সাবস্ক্রিপশন অবস্থা, বাকি দিন, MRR, ইনপুট যাচাই");
 
 console.log("\nসব টেস্ট পাস ✅");

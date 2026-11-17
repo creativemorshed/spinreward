@@ -21,7 +21,9 @@ export default function LoginPage() {
         setError("ইমেইল বা পাসওয়ার্ড সঠিক নয়");
         return;
       }
-      router.replace("/dashboard");
+      // ?next=/admin ইত্যাদি — শুধু সাইটের ভেতরের পাথ (open-redirect ঠেকাতে "//" ও বাইরের URL বাদ)
+      const next = new URLSearchParams(window.location.search).get("next");
+      router.replace(next && /^\/[A-Za-z0-9/_-]*$/.test(next) && !next.startsWith("//") ? next : "/dashboard");
     } catch {
       setError("লগইন করা যায়নি, ইন্টারনেট পরীক্ষা করুন");
     } finally {

@@ -105,8 +105,18 @@ export async function getBonusBalance(admin: SupabaseClient, restaurantId: strin
   return row?.bonus_spins ?? 0;
 }
 
-/** slug থেকে সক্রিয় রেস্টুরেন্টের id */
+/**
+ * slug থেকে সেবা-চালু রেস্টুরেন্টের id।
+ * স্থগিত (is_active=false) বা মেয়াদ-উত্তীর্ণ (service_until ≤ এখন) হলে null —
+ * ফলে spin/visitor/share সব API একসাথে বন্ধ হয়ে যায়।
+ */
 export async function findActiveRestaurantId(admin: SupabaseClient, slug: string): Promise<string | null> {
-  const { data } = await admin.from("restaurants").select("id").eq("slug", slug).eq("is_active", true).maybeSingle();
+  const { data } = await admin
+    .from("restaurants")
+    .select("id")
+    .eq("slug", slug)
+    .eq("is_active", true)
+    .gt("service_until", new Date().toISOString())
+    .maybeSingle();
   return data?.id ?? null;
 }

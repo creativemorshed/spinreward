@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "tsc --noEmit",
-    "test": "tsx scripts/logic.test.ts && tsx scripts/db.test.ts"
+    "test": "tsx scripts/logic.test.ts && tsx scripts/db.test.ts",
+    "test:api": "tsx scripts/admin-api.test.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",

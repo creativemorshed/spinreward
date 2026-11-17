@@ -25,7 +25,12 @@ export async function GET(req: Request) {
     }
 
     const body: DashboardResponse = {
-      restaurant: { name: restaurant.name, slug: restaurant.slug, plan: restaurant.plan },
+      restaurant: {
+        name: restaurant.name,
+        slug: restaurant.slug,
+        plan: restaurant.plan,
+        serviceUntil: restaurant.serviceUntil,
+      },
       stats: data as DashboardStats,
     };
     return NextResponse.json(body, { headers: { "Cache-Control": "no-store" } });

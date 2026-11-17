@@ -56,6 +56,59 @@ export interface DashboardStats {
 }
 
 export interface DashboardResponse {
-  restaurant: { name: string; slug: string; plan: Plan };
+  restaurant: { name: string; slug: string; plan: Plan; serviceUntil: string };
   stats: DashboardStats;
+}
+
+/* ---------------- Admin Panel ---------------- */
+
+export interface AdminRestaurant {
+  id: string;
+  name: string;
+  slug: string;
+  plan: Plan;
+  is_active: boolean;
+  service_until: string;
+  created_at: string;
+  owner_email: string | null;
+  spins: number;
+  payments_count: number;
+  last_payment_at: string | null;
+}
+
+export interface AdminPayment {
+  id: string;
+  amount: number;
+  plan: Plan;
+  method: string;
+  reference: string | null;
+  period_days: number;
+  note: string | null;
+  paid_at: string;
+  restaurants: { name: string; slug: string } | null;
+}
+
+export interface PlatformStats {
+  restaurants_total: number;
+  restaurants_suspended: number;
+  restaurants_expired: number;
+  restaurants_paying: number;
+  restaurants_trial: number;
+  expiring_soon: number;
+  paying_by_plan: Record<Plan, number>;
+  revenue_total: number;
+  revenue_month: number;
+  revenue_by_month: { month: string; amount: number }[];
+  total_spins: number;
+  total_coupons: number;
+  total_redemptions: number;
+  total_visitors: number;
+  referred_visitors: number;
+  daily: DailyPoint[];
+  top_restaurants: { name: string; slug: string; spins: number }[];
+}
+
+export interface AdminStatsResponse {
+  stats: PlatformStats;
+  mrr: number;
 }

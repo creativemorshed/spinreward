@@ -7,6 +7,8 @@ export interface OwnedRestaurant {
   name: string;
   slug: string;
   plan: Plan;
+  /** সেবার মেয়াদ (ISO) — মেয়াদ শেষ হলেও মালিক ড্যাশবোর্ডে ঢুকতে পারে, শুধু স্পিন-পেজ বন্ধ থাকে */
+  serviceUntil: string;
 }
 
 /**
@@ -24,7 +26,7 @@ export async function getOwnedRestaurant(req: Request): Promise<OwnedRestaurant 
 
   const { data, error } = await admin
     .from("restaurants")
-    .select("id, name, slug, plan, is_active")
+    .select("id, name, slug, plan, is_active, service_until")
     .eq("owner_id", userData.user.id)
     .eq("is_active", true)
     .order("created_at", { ascending: true })
@@ -32,5 +34,11 @@ export async function getOwnedRestaurant(req: Request): Promise<OwnedRestaurant 
     .maybeSingle();
 
   if (error || !data) return null;
-  return { id: data.id, name: data.name, slug: data.slug, plan: data.plan as Plan };
+  return {
+    id: data.id,
+    name: data.name,
+    slug: data.slug,
+    plan: data.plan as Plan,
+    serviceUntil: data.service_until as string,
+  };
 }

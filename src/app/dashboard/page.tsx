@@ -5,6 +5,8 @@ import { useCallback, useEffect, useState } from "react";
 import DailyChart from "@/components/DailyChart";
 import RedeemForm from "@/components/RedeemForm";
 import StatCard from "@/components/StatCard";
+import ChangePassword from "@/components/ChangePassword";
+import { daysLeft } from "@/lib/plans";
 import { getBrowserClient } from "@/lib/supabase-browser";
 import type { DashboardResponse } from "@/lib/types";
 
@@ -72,6 +74,7 @@ export default function DashboardPage() {
   }
 
   const { restaurant, stats } = data;
+  const serviceDays = daysLeft(restaurant.serviceUntil);
   const spinUrl = typeof window !== "undefined" ? `${window.location.origin}/r/${restaurant.slug}` : `/r/${restaurant.slug}`;
 
   return (
@@ -98,6 +101,16 @@ export default function DashboardPage() {
           </button>
         </div>
       </header>
+
+      {serviceDays <= 0 ? (
+        <p role="alert" className="rounded-xl bg-red-50 px-4 py-3 text-sm font-medium text-red-800">
+          ⛔ আপনার সাবস্ক্রিপশনের মেয়াদ শেষ হয়েছে, তাই কাস্টমারদের স্পিন পেজ এখন বন্ধ। নবায়ন করতে আমাদের সাথে যোগাযোগ করুন।
+        </p>
+      ) : serviceDays <= 7 ? (
+        <p role="status" className="rounded-xl bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900">
+          ⏳ আপনার সাবস্ক্রিপশনের মেয়াদ আর {serviceDays.toLocaleString("bn-BD")} দিন বাকি। বন্ধ হওয়ার আগে নবায়ন করে নিন।
+        </p>
+      ) : null}
 
       <section aria-label="সারসংক্ষেপ" className="grid grid-cols-2 gap-4 lg:grid-cols-3">
         <StatCard label="মোট স্পিন" value={stats.total_spins.toLocaleString("bn-BD")} />
@@ -175,6 +188,8 @@ export default function DashboardPage() {
 
         <RedeemForm getToken={getToken} onRedeemed={() => void load()} />
       </section>
+
+      <ChangePassword />
     </main>
   );
 }
