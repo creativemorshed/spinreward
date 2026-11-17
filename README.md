@@ -1,59 +1,92 @@
-# SpinReward SaaS v2 — Setup Guide
+# SpinReward (Next.js + TypeScript + Tailwind + Supabase)
 
-## ধাপ ১ — Supabase Setup
-1. https://supabase.com → New Project তৈরি করুন
-2. SQL Editor → `database/schema.sql` পুরো code paste করে Run করুন
-3. Settings → API থেকে:
-   - Project URL
-   - anon/public key
+রেস্টুরেন্টের টেবিলে QR → কাস্টমার স্পিন করে ক্যাশ ডিসকাউন্ট জেতে → ক্যাশিয়ার কুপন রিডিম করে → মালিক ড্যাশবোর্ডে সব দেখে।
 
-## ধাপ ২ — Environment Variables
-প্রজেক্ট root-এ `.env` ফাইল তৈরি করুন:
+## ফিচার (Step 1–3)
+
+| Step | কী আছে | কোথায় |
+|------|--------|--------|
+| 1 | ৮-segment SVG চাকা, ৫.২ সেকেন্ডের ease-out অ্যানিমেশন, সার্ভার-সাইড weighted random, কুপন কোড | `src/components/SpinWheel.tsx`, `src/app/api/spin/route.ts` |
+| 2 | প্রতি রেস্টুরেন্টের ইউনিক QR (`/r/<slug>`), PNG ডাউনলোড | `src/app/api/qr/[slug]/route.ts` |
+| 3 | মোট স্পিন / কুপন / রিডিম, সবচেয়ে বেশি জেতা পুরস্কার, দৈনিক চার্ট, QR কার্ড, কুপন রিডিম | `src/app/dashboard/page.tsx`, `src/app/api/dashboard`, `src/app/api/redeem` |
+
+## Viral Loop (Step 4)
+
 ```
-VITE_SUPABASE_URL=https://your-project.supabase.co
-VITE_SUPABASE_ANON_KEY=your-anon-key-here
+স্পিন → জেতা/হারা → শেয়ার (+১ বোনাস স্পিন, দিনে ১ বার)
+      → বন্ধু /r/<slug>?ref=<কোড> লিংকে ঢোকে → প্রথম স্পিন করে
+      → শেয়ারকারী +১ বোনাস স্পিন (দিনে সর্বোচ্চ ৩ জন) → আবার শেয়ার …
 ```
 
-## ধাপ ৩ — GitHub Upload
-এই ফাইলগুলো GitHub-এ upload করুন (`.env` বাদে):
-- src/
-- database/
-- index.html, package.json, vite.config.js, vercel.json
+| নিয়ম | মান |
+|-------|-----|
+| ফ্রি স্পিন | প্রতি ভিজিটর, প্রতিদিন ১টি (ঢাকার সময়) |
+| শেয়ার বোনাস | +১, দিনে একবার |
+| রেফারেল বোনাস | বন্ধুর **প্রথম স্পিনের** পর +১; একজন রেফারার দিনে সর্বোচ্চ ৩ জনের জন্য |
+| বোনাস জমার সীমা | ৫ |
+| ড্যাশবোর্ড | মোট ভিজিটর, শেয়ার থেকে আসা নতুন ভিজিটর, বোনাস স্পিন ব্যবহার |
 
-## ধাপ ৪ — Vercel Deploy
-1. vercel.com → GitHub repo connect
-2. Environment Variables-এ VITE_SUPABASE_URL ও VITE_SUPABASE_ANON_KEY যোগ করুন
-3. Deploy!
+**আপগ্রেড করার সময়:** আগে `schema.sql` চালিয়ে থাকলে এখন শুধু `supabase/002_viral_loop.sql` Run করুন (বারবার চালালেও সমস্যা নেই)। নতুন সেটআপে দুটোই ক্রমান্বয়ে চালান।
 
-## URL গুলো
-| URL | কাজ |
-|-----|-----|
-| `/` | Landing page (sales) |
-| `/register` | নতুন রেস্টুরেন্ট signup |
-| `/login` | রেস্টুরেন্ট login |
-| `/dashboard` | রেস্টুরেন্ট owner dashboard |
-| `/r/:slug` | Customer spin wheel |
-| `/redeem?code=XXX` | Cashier coupon verify |
+**অপব্যবহার ঠেকানো:**
+- রেফারেল লিংকে `visitor_id` নয়, আলাদা `ref_code` থাকে।
+- নিজের লিংকে নিজে ঢুকলে এবং আগে স্পিন করা ভিজিটরের রেফারেল গণ্য হয় না।
+- বোনাস শুধু বন্ধুর স্পিন করার পরে মেলে, লিংকে ক্লিক করলেই নয়।
+- সব ব্যালেন্স পরিবর্তন DB ফাংশনে atomic; একসাথে অনেক রিকোয়েস্টেও বোনাস ঋণাত্মক হয় না।
 
-## Customer Flow
-QR Scan → `/r/sampan` → Spin → জেতা → Coupon Modal → Facebook Share → Cashier Redeem `/redeem`
+**সত্যিটা জানা দরকার:** Facebook আসলেই পোস্ট হয়েছে কি না সার্ভার যাচাই করতে পারে না। তাই শেয়ার বোনাস "শেয়ার বাটনে চাপ" ধরে দেওয়া হয় (দিনে ১টি সীমায়)। রেফারেল বোনাসে এই সমস্যা নেই, কারণ সেটা আসল নতুন ভিজিটরের স্পিনের উপর নির্ভর করে।
 
-## ফাইল Structure
+## ফোল্ডার স্ট্রাকচার
+
 ```
-spinreward-v2/
-├── src/
-│   ├── lib/supabase.js       ← সব DB queries
-│   ├── pages/
-│   │   ├── Landing.jsx       ← Sales page
-│   │   ├── Auth.jsx          ← Login/Register
-│   │   ├── Dashboard.jsx     ← Restaurant admin
-│   │   ├── WheelPage.jsx     ← Public spin wheel + coupon + share
-│   │   └── RedeemPage.jsx    ← Cashier coupon verify
-│   ├── App.jsx               ← Router
-│   └── main.jsx
-├── database/schema.sql
-├── index.html
-├── package.json
-├── vite.config.js
-└── vercel.json
+src/
+  app/
+    page.tsx                 ল্যান্ডিং + প্রাইসিং
+    login/page.tsx           রেস্টুরেন্ট লগইন
+    dashboard/page.tsx       ড্যাশবোর্ড
+    r/[slug]/page.tsx        কাস্টমারের স্পিন পেজ (QR এখানে খোলে)
+    api/spin|dashboard|redeem|qr/...
+  components/                SpinWheel, StatCard, DailyChart, RedeemForm
+  lib/                       wheel.ts, rewards.ts (pure লজিক), auth.ts, supabase-*.ts, types.ts
+supabase/schema.sql          টেবিল, RLS, ডিফল্ট ৮ reward trigger, stats RPC
+scripts/logic.test.ts        চাকা ও random লজিকের টেস্ট
 ```
+
+## সেটআপ
+
+1. https://supabase.com → New Project
+2. SQL Editor-এ প্রথমে `supabase/schema.sql`, তারপর `supabase/002_viral_loop.sql` পুরোটা Run করুন
+3. Authentication → Users → **Add user** (রেস্টুরেন্ট মালিকের ইমেইল/পাসওয়ার্ড), তার UUID কপি করুন
+4. SQL Editor-এ রেস্টুরেন্ট বানান (৮টি ডিফল্ট পুরস্কার অটো তৈরি হবে):
+   ```sql
+   insert into public.restaurants (owner_id, name, slug, plan)
+   values ('<ইউজার-uuid>', 'Sampan Restaurant', 'sampan', 'standard');
+   ```
+5. `.env.local` বানান (`.env.example` দেখুন) এবং চালান:
+   ```bash
+   npm install
+   npm run dev        # http://localhost:3000
+   npm test           # লজিক টেস্ট
+   ```
+6. `/login` → লগইন → ড্যাশবোর্ড। `/r/sampan` কাস্টমারের পেজ।
+
+## Vercel-এ ডিপ্লয়
+
+1. GitHub-এ push করুন (`.env*` নয়)
+2. Vercel → Import → Environment Variables-এ চারটি ভ্যারিয়েবল দিন (`.env.example`)
+3. `SUPABASE_SERVICE_ROLE_KEY` কখনও `NEXT_PUBLIC_` দিয়ে শুরু করবেন না
+4. Deploy-এর পর `NEXT_PUBLIC_SITE_URL` আসল ডোমেইনে সেট করুন, তারপর QR আবার ডাউনলোড করুন
+
+## নিরাপত্তার সিদ্ধান্ত
+
+- সব টেবিলে RLS চালু, কোনো public policy নেই; ডেটা শুধু সার্ভার API দিয়ে যায়।
+- Reward বাছাই সার্ভারে `crypto.randomInt` দিয়ে; ক্লায়েন্ট শুধু ফলাফল অ্যানিমেট করে। weight কাস্টমারকে পাঠানো হয় না।
+- "দিনে ১ স্পিন" DB unique constraint (`restaurant + visitor + দিন`) দিয়ে — একসাথে অনেক রিকোয়েস্ট পাঠিয়েও পার পাওয়া যায় না।
+- কুপন রিডিমে `status = 'active'` শর্ত থাকায় একই কুপন দুইবার রিডিম হয় না।
+
+## জানা সীমাবদ্ধতা
+
+- `visitor_id` ব্রাউজারের localStorage-এ থাকে; ডেটা মুছে/ইনকগনিটোতে গেলে আবার ফ্রি স্পিন সম্ভব, এবং নিজের লিংকে নতুন ইনকগনিটো ট্যাবে ঢুকে রেফারেল বোনাস ফার্ম করা যায় (দৈনিক সীমা ৩ থাকায় ক্ষতি সীমিত)। পরের ধাপে IP/ডিভাইস রেট-লিমিট যোগ করুন।
+- রেস্টুরেন্ট তৈরি এখন SQL দিয়ে; অ্যাডমিন প্যানেল পরের ধাপ।
+- সাবস্ক্রিপশন/পেমেন্ট এখনও যুক্ত নয় (প্ল্যান শুধু লেবেল)।
+- Facebook শেয়ারের সত্যতা যাচাই সম্ভব নয় (ওপরে দেখুন)।
