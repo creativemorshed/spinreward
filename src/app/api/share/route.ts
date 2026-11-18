@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { clientIpHash } from "@/lib/ip";
+import { enforceBurstLimit } from "@/lib/ratelimit";
 import { getAdmin } from "@/lib/supabase-admin";
 import { isValidSlug, isValidVisitorId } from "@/lib/validation";
 import { ensureVisitor, findActiveRestaurantId, getBonusBalance } from "@/lib/visitors";
@@ -24,12 +26,15 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "অবৈধ অনুরোধ" }, { status: 400 });
   }
 
+  const limited = await enforceBurstLimit(req);
+  if (limited) return limited;
+
   try {
     const admin = getAdmin();
     const restaurantId = await findActiveRestaurantId(admin, body.slug);
     if (!restaurantId) return NextResponse.json({ error: "রেস্টুরেন্ট পাওয়া যায়নি" }, { status: 404 });
 
-    await ensureVisitor(admin, restaurantId, body.visitorId);
+    await ensureVisitor(admin, restaurantId, body.visitorId, null, clientIpHash(req));
     const { data: granted, error } = await admin.rpc("claim_share_bonus", {
       p_restaurant: restaurantId,
       p_visitor: body.visitorId,

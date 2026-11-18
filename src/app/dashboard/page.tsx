@@ -6,6 +6,7 @@ import DailyChart from "@/components/DailyChart";
 import RedeemForm from "@/components/RedeemForm";
 import StatCard from "@/components/StatCard";
 import ChangePassword from "@/components/ChangePassword";
+import RenewalCard from "@/components/RenewalCard";
 import { daysLeft } from "@/lib/plans";
 import { getBrowserClient } from "@/lib/supabase-browser";
 import type { DashboardResponse } from "@/lib/types";
@@ -188,6 +189,13 @@ export default function DashboardPage() {
 
         <RedeemForm getToken={getToken} onRedeemed={() => void load()} />
       </section>
+
+      <RenewalCard
+        getToken={getToken}
+        currentPlan={restaurant.plan}
+        urgent={serviceDays <= 7}
+        onApprovedSeen={() => void load()}
+      />
 
       <ChangePassword />
     </main>

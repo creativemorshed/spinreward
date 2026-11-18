@@ -63,3 +63,22 @@ export function monthlyRecurringRevenue(payingByPlan: Record<Plan, number>): num
 export function formatTaka(amount: number): string {
   return `৳${amount.toLocaleString("bn-BD")}`;
 }
+
+/* ---------------- নবায়ন (মালিকের অনুরোধ) ---------------- */
+
+/** মালিক কত মাসের জন্য একসাথে নবায়ন করতে পারবেন */
+export const RENEWAL_MONTHS = [1, 2, 3, 6, 12] as const;
+export type RenewalMonths = (typeof RENEWAL_MONTHS)[number];
+export const isRenewalMonths = (v: unknown): v is RenewalMonths =>
+  typeof v === "number" && (RENEWAL_MONTHS as readonly number[]).includes(v);
+
+/** অনুরোধের পরিমাণ ও মেয়াদ সবসময় সার্ভারে গণনা হয় (ক্লায়েন্টের পাঠানো পরিমাণ বিশ্বাস করা হয় না) */
+export function renewalQuote(plan: Plan, months: RenewalMonths): { amount: number; periodDays: number } {
+  return { amount: PLAN_PRICE[plan] * months, periodDays: 30 * months };
+}
+
+/** মালিক যে মাধ্যমগুলোতে অনুরোধ জমা দিতে পারেন (ক্যাশ/অন্যান্য শুধু অ্যাডমিন হাতে রেকর্ড করে) */
+export const REQUEST_METHODS = ["bkash", "nagad", "rocket", "bank"] as const;
+export type RequestMethod = (typeof REQUEST_METHODS)[number];
+export const isRequestMethod = (v: unknown): v is RequestMethod =>
+  typeof v === "string" && (REQUEST_METHODS as readonly string[]).includes(v);

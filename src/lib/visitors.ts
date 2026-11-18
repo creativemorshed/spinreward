@@ -14,7 +14,7 @@ export interface VisitorState {
 async function fetchVisitor(admin: SupabaseClient, restaurantId: string, visitorId: string) {
   const { data, error } = await admin
     .from("visitors")
-    .select("ref_code, bonus_spins")
+    .select("ref_code, bonus_spins, last_ip_hash")
     .eq("restaurant_id", restaurantId)
     .eq("visitor_id", visitorId)
     .maybeSingle();
@@ -35,9 +35,28 @@ export async function ensureVisitor(
   restaurantId: string,
   visitorId: string,
   referrerRefCode?: string | null,
+  ipHash?: string | null,
 ): Promise<VisitorState> {
   const existing = await fetchVisitor(admin, restaurantId, visitorId);
-  if (existing) return { refCode: existing.ref_code, bonusSpins: existing.bonus_spins, isNew: false };
+  if (existing) {
+    // সর্বশেষ IP হালনাগাদ (বদলালে মাত্র); প্রথম-দেখা IP (ip_hash) একবার বসলে আর বদলায় না
+    if (ipHash && existing.last_ip_hash !== ipHash) {
+      const { error } = await admin
+        .from("visitors")
+        .update({ last_ip_hash: ipHash })
+        .eq("restaurant_id", restaurantId)
+        .eq("visitor_id", visitorId);
+      if (error) console.error("last_ip_hash update failed", error);
+      // ip_hash ফাঁকা থাকলে (০০৪-এর আগের ভিজিটর) এই প্রথমবার বসাই
+      await admin
+        .from("visitors")
+        .update({ ip_hash: ipHash })
+        .eq("restaurant_id", restaurantId)
+        .eq("visitor_id", visitorId)
+        .is("ip_hash", null);
+    }
+    return { refCode: existing.ref_code, bonusSpins: existing.bonus_spins, isNew: false };
+  }
 
   let referredBy: string | null = null;
   if (referrerRefCode && isValidRefCode(referrerRefCode)) {
@@ -66,6 +85,8 @@ export async function ensureVisitor(
         visitor_id: visitorId,
         ref_code: generateRefCode(randomInt),
         referred_by_visitor: referredBy,
+        ip_hash: ipHash ?? null,
+        last_ip_hash: ipHash ?? null,
       })
       .select("ref_code, bonus_spins")
       .single();

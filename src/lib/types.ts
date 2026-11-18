@@ -112,3 +112,39 @@ export interface AdminStatsResponse {
   stats: PlatformStats;
   mrr: number;
 }
+
+/* ---------------- পেমেন্ট নবায়ন অনুরোধ ---------------- */
+
+export type PaymentRequestStatus = "pending" | "approved" | "rejected";
+
+export interface PaymentRequest {
+  id: string;
+  plan: Plan;
+  amount: number;
+  method: string;
+  reference: string;
+  period_days: number;
+  note: string | null;
+  status: PaymentRequestStatus;
+  admin_note: string | null;
+  created_at: string;
+  reviewed_at: string | null;
+}
+
+/** অ্যাডমিনের তালিকায় রেস্টুরেন্টের নাম সহ */
+export interface AdminPaymentRequest extends PaymentRequest {
+  restaurants: { name: string; slug: string } | null;
+}
+
+/** মালিক যে নম্বরে টাকা পাঠাবেন (সার্ভারের env থেকে; সেট না থাকলে ফাঁকা) */
+export interface PaymentInstructions {
+  bkash?: string;
+  nagad?: string;
+  rocket?: string;
+  bank?: string;
+}
+
+export interface RenewalResponse {
+  requests: PaymentRequest[];
+  instructions: PaymentInstructions;
+}

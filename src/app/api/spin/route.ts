@@ -1,8 +1,11 @@
 import { randomInt } from "node:crypto";
 import { NextResponse } from "next/server";
+import { clientIpHash } from "@/lib/ip";
+import { LIMITS } from "@/lib/limits";
+import { enforceBurstLimit } from "@/lib/ratelimit";
 import { getAdmin } from "@/lib/supabase-admin";
 import { generateCouponCode, pickWeightedIndex } from "@/lib/rewards";
-import { isValidSlug, isValidVisitorId } from "@/lib/validation";
+import { isValidSlug, isValidVisitorId, todayInDhaka } from "@/lib/validation";
 import { ensureVisitor, findActiveRestaurantId, getBonusBalance } from "@/lib/visitors";
 import type { SpinResponse } from "@/lib/types";
 
@@ -35,6 +38,10 @@ export async function POST(req: Request) {
   const slug = body.slug;
   const visitorId = body.visitorId;
 
+  const limited = await enforceBurstLimit(req);
+  if (limited) return limited;
+  const ipHash = clientIpHash(req);
+
   try {
     const admin = getAdmin();
 
@@ -57,13 +64,38 @@ export async function POST(req: Request) {
     if (index === null) return fail("এই রেস্টুরেন্টের চাকা এখনও প্রস্তুত নয়", 409);
     const reward = rewards[index];
 
+    // দৈনিক IP সীমা (উদার — রেস্টুরেন্টের WiFi-তে সবাই এক IP; এটা শুধু ফার্মিং ঠেকানোর শেষ জাল)
+    if (ipHash) {
+      const { count: ipSpinsToday } = await admin
+        .from("spins")
+        .select("id", { count: "exact", head: true })
+        .eq("restaurant_id", restaurantId)
+        .eq("ip_hash", ipHash)
+        .eq("spin_day", todayInDhaka());
+      if ((ipSpinsToday ?? 0) >= LIMITS.spinsPerIpPerDay) {
+        return fail("এই নেটওয়ার্ক থেকে আজকের সর্বোচ্চ স্পিন সীমা পূর্ণ হয়েছে। কাল আবার চেষ্টা করুন।", 429, "IP_LIMIT");
+      }
+    }
+
     // ভিজিটর রেকর্ড (ও ref থাকলে রেফারেল সংযোগ) নিশ্চিত
-    const visitor = await ensureVisitor(admin, restaurantId, visitorId, typeof body.ref === "string" ? body.ref : null);
+    const visitor = await ensureVisitor(
+      admin,
+      restaurantId,
+      visitorId,
+      typeof body.ref === "string" ? body.ref : null,
+      ipHash,
+    );
 
     const insertSpin = (isBonus: boolean) =>
       admin
         .from("spins")
-        .insert({ restaurant_id: restaurantId, reward_id: reward.id, visitor_id: visitorId, is_bonus: isBonus })
+        .insert({
+          restaurant_id: restaurantId,
+          reward_id: reward.id,
+          visitor_id: visitorId,
+          is_bonus: isBonus,
+          ip_hash: ipHash,
+        })
         .select("id")
         .single();
 
@@ -131,7 +163,7 @@ export async function POST(req: Request) {
 
     // রেফারেল ক্রেডিট — ব্যর্থ হলেও ব্যবহারকারীর স্পিনে প্রভাব ফেলে না
     try {
-      await admin.rpc("credit_referral", { p_restaurant: restaurantId, p_visitor: visitorId });
+      await admin.rpc("credit_referral", { p_restaurant: restaurantId, p_visitor: visitorId, p_ip: ipHash });
     } catch (e) {
       console.error("credit_referral failed", e);
     }

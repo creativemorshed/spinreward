@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { clientIpHash } from "@/lib/ip";
+import { enforceBurstLimit } from "@/lib/ratelimit";
 import { getAdmin } from "@/lib/supabase-admin";
 import { isValidSlug, isValidVisitorId } from "@/lib/validation";
 import { ensureVisitor, findActiveRestaurantId, hasFreeSpinToday } from "@/lib/visitors";
@@ -23,6 +25,9 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "অবৈধ অনুরোধ" }, { status: 400 });
   }
 
+  const limited = await enforceBurstLimit(req);
+  if (limited) return limited;
+
   try {
     const admin = getAdmin();
     const restaurantId = await findActiveRestaurantId(admin, body.slug);
@@ -33,6 +38,7 @@ export async function POST(req: Request) {
       restaurantId,
       body.visitorId,
       typeof body.ref === "string" ? body.ref : null,
+      clientIpHash(req),
     );
     const freeSpinAvailable = await hasFreeSpinToday(admin, restaurantId, body.visitorId);
 

@@ -34,7 +34,9 @@ async function main() {
   await db.exec(read("002_viral_loop.sql"));
   await db.exec(read("003_admin_panel.sql"));
   await db.exec(read("003_admin_panel.sql"));
-  console.log("✓ schema.sql + 002 + 003 চলেছে (মাইগ্রেশন idempotent)");
+  await db.exec(read("004_payments_reminders_antifraud.sql"));
+  await db.exec(read("004_payments_reminders_antifraud.sql"));
+  console.log("✓ schema.sql + 002 + 003 + 004 চলেছে (মাইগ্রেশন idempotent)");
 
   const q = async <T = Record<string, unknown>>(sql: string, params: unknown[] = []) =>
     (await db.query<T>(sql, params)).rows;
@@ -278,6 +280,204 @@ async function main() {
   await q("insert into platform_admins (user_id) values ($1)", [user.id]);
   await expectError(q("insert into platform_admins (user_id) values ($1)", [user.id]), /duplicate key|unique/i, "ডুপ্লিকেট অ্যাডমিন");
   console.log("✓ platform_admins");
+
+  // ================= Migration 004 =================
+
+  // ---- hit_rate_limit ----
+  const hit = async (key: string, windowSec: number, max: number) =>
+    (await q<{ r: boolean }>("select hit_rate_limit($1,$2,$3) as r", [key, windowSec, max]))[0].r;
+
+  assert.deepEqual([await hit("k1", 60, 3), await hit("k1", 60, 3), await hit("k1", 60, 3), await hit("k1", 60, 3)], [
+    true,
+    true,
+    true,
+    false,
+  ]);
+  assert.equal(await hit("k2", 60, 3), true, "অন্য key স্বাধীন");
+  await q("update rate_limits set window_start = now() - interval '2 minutes' where key='k1'");
+  assert.equal(await hit("k1", 60, 3), true, "জানালা পেরোলে গণনা নতুন করে শুরু");
+  assert.equal((await q<{ hits: number }>("select hits from rate_limits where key='k1'"))[0].hits, 1);
+  await q("update rate_limits set window_start = now() - interval '2 days' where key='k2'");
+  assert.equal((await q<{ n: number }>("select purge_rate_limits() as n"))[0].n, 1);
+  assert.equal(Number((await q<{ c: string }>("select count(*) c from rate_limits where key='k2'"))[0].c), 0);
+  const concurrent = await Promise.all(Array.from({ length: 10 }, () => hit("k3", 60, 4)));
+  assert.equal(concurrent.filter(Boolean).length, 4, "একসাথে ১০টি চেষ্টায় ঠিক ৪টি অনুমোদিত");
+  console.log("✓ hit_rate_limit: সীমা, জানালা-রিসেট, আলাদা key, purge, একসাথে ১০ চেষ্টায় ঠিক ৪টি");
+
+  // ---- IP-সচেতন রেফারেল ----
+  const [rest3] = await q<{ id: string }>("insert into restaurants (name, slug) values ('IP Test', 'ip-test') returning id");
+  const r3 = rest3.id;
+  const v = (id: string, ref: string, by: string | null, ip: string | null, last: string | null = ip) =>
+    q(
+      "insert into visitors (restaurant_id, visitor_id, ref_code, referred_by_visitor, ip_hash, last_ip_hash) values ($1,$2,$3,$4,$5,$6)",
+      [r3, id, ref, by, ip, last],
+    );
+  const credit3 = async (id: string, ip: string | null = null) =>
+    (await q<{ r: boolean }>("select credit_referral($1,$2,3,$3) as r", [r3, id, ip]))[0].r;
+  const bonus3 = async (id: string) =>
+    (await q<{ b: number }>("select bonus_spins b from visitors where restaurant_id=$1 and visitor_id=$2", [r3, id]))[0].b;
+  const rewarded = async (id: string) =>
+    (await q<{ x: boolean }>("select referral_rewarded x from visitors where restaurant_id=$1 and visitor_id=$2", [r3, id]))[0].x;
+
+  await v("referrer-01", "gggggggg22", null, "ipA", "ipB"); // প্রথমে ipA, সর্বশেষ ipB
+  await v("selfie-0001", "hhhhhhhh22", "referrer-01", "ipA"); // রেফারারের প্রথম IP-র সাথে মেলে
+  await v("selfie-0002", "jjjjjjjj22", "referrer-01", "ipB"); // রেফারারের সর্বশেষ IP-র সাথে মেলে
+  await v("selfie-0003", "kkkkkkkk22", "referrer-01", "ipC"); // নিজের রেকর্ডে আলাদা, কিন্তু এখনকার অনুরোধ ipA থেকে
+  await v("friend-0001", "mmmmmmmm22", "referrer-01", "ipX");
+  await v("friend-0002", "nnnnnnnn22", "referrer-01", "ipY");
+  await v("friend-0003", "pppppppp22", "referrer-01", "ipZ");
+  await v("friend-0004", "qqqqqqqq22", "referrer-01", "ipW");
+  await v("noip-00001", "rrrrrrrr22", "referrer-01", null);
+
+  assert.equal(await credit3("selfie-0001"), false, "রেফারারের প্রথম IP-তে মিলেছে");
+  assert.equal(await credit3("selfie-0002"), false, "রেফারারের সর্বশেষ IP-তে মিলেছে");
+  assert.equal(await credit3("selfie-0003", "ipA"), false, "এখনকার অনুরোধের IP মিলেছে");
+  assert.equal(await bonus3("referrer-01"), 0, "ব্লক হলে কোনো বোনাস নেই");
+  assert.equal(await rewarded("selfie-0001"), false);
+  assert.equal(await credit3("selfie-0001"), false, "ব্লক হওয়া রেফারি আবার চেষ্টা করলেও না (একবারই প্রক্রিয়া)");
+
+  assert.equal(await credit3("friend-0001"), true, "ভিন্ন IP-তে বন্ধু");
+  assert.equal(await credit3("friend-0002"), true);
+  assert.equal(await credit3("noip-00001"), true, "IP অজানা হলে ব্লক নয় (লোকাল/ডেভ)");
+  assert.equal(await credit3("friend-0003"), false, "দৈনিক সীমা ৩ — ব্লক হওয়া তিনটি সীমা খরচ করেনি, বৈধ ৩টি করেছে");
+  assert.equal(await bonus3("referrer-01"), 3);
+  assert.equal(await rewarded("friend-0001"), true);
+  assert.equal(await rewarded("friend-0003"), false);
+  console.log("✓ credit_referral: একই IP (প্রথম/সর্বশেষ/বর্তমান) ব্লক, ব্লক সীমা খরচ করে না, IP অজানায় চলে, দৈনিক সীমা ৩");
+
+  // ---- পেমেন্ট অনুরোধ ----
+  const [owner4] = await q<{ id: string }>("insert into auth.users (email) values ('owner4@example.com') returning id");
+  const [rest4] = await q<{ id: string }>(
+    "insert into restaurants (owner_id, name, slug, plan) values ($1, 'Pay Test', 'pay-test', 'basic') returning id",
+    [owner4.id],
+  );
+  const r4 = rest4.id;
+  const submit = (ref: string, method = "bkash", plan = "standard", amount = 999, days = 30, note: string | null = null) =>
+    q<{ id: string }>("select submit_payment_request($1,$2,$3,$4,$5,$6,$7) as id", [r4, plan, amount, method, ref, days, note]);
+  const review = (id: string, approve: boolean, note: string | null = null) =>
+    q<{ r: any }>("select review_payment_request($1,$2,$3,$4) as r", [id, user.id, approve, note]);
+  const reqRow = async (id: string) =>
+    (await q<any>("select status, payment_id, admin_note, reviewed_at, reference from payment_requests where id=$1", [id]))[0];
+
+  const [{ id: reqA }] = await submit(" abc123xyz ", "bkash", "standard", 999, 30, " প্রথমবার ");
+  assert.equal((await reqRow(reqA)).reference, "ABC123XYZ", "TrxID trim ও বড় হাতের");
+  // অবৈধ ইনপুট (অপেক্ষমাণ < ৩ থাকতেই, যাতে কনস্ট্রেইন্টই আগে ধরা পড়ে)
+  await expectError(submit("ABC123XYZ"), /duplicate key|unique/i, "একই TrxID দ্বিতীয়বার (pending)");
+  await expectError(submit("XYZ", "cash"), /check|violates/i, "ক্যাশ অনুরোধে চলে না");
+  await expectError(submit("AB"), /check|violates/i, "TrxID খুব ছোট");
+  await expectError(submit("OKOKOK", "bkash", "gold"), /check|violates/i, "অবৈধ প্ল্যান");
+  await expectError(
+    q("select submit_payment_request($1,'basic',499,'bkash','NOREST1',30,null)", ["00000000-0000-0000-0000-000000000000"]),
+    /not found/i,
+    "অচেনা রেস্টুরেন্ট",
+  );
+  const [{ id: reqB }] = await submit("ABC123XYZ", "nagad"); // ভিন্ন মাধ্যম = বৈধ
+  const [{ id: reqC }] = await submit("DEF456", "rocket");
+  await expectError(submit("GHI789", "bkash"), /too many pending/i, "৩টির বেশি অপেক্ষমাণ");
+  console.log("✓ submit_payment_request: TrxID স্বাভাবিকীকৃত, ডুপ্লিকেট/অপেক্ষমাণ-সীমা/অবৈধ ইনপুট ঠেকায়");
+
+  // অনুমোদন: খাতায় এন্ট্রি + মেয়াদ বাড়া + প্ল্যান বদল (একসাথে)
+  await q("update restaurants set service_until = now() + interval '5 days' where id=$1", [r4]);
+  const approved = (await review(reqA, true, "TrxID মিলেছে"))[0].r;
+  assert.equal(approved.status, "approved");
+  const rowA = await reqRow(reqA);
+  assert.equal(rowA.status, "approved");
+  assert.equal(rowA.payment_id, approved.payment_id);
+  assert.equal(rowA.admin_note, "TrxID মিলেছে");
+  assert.ok(rowA.reviewed_at);
+  const payRow = (await q<any>("select amount, method, reference, plan, period_days, recorded_by, note from payments where id=$1", [rowA.payment_id]))[0];
+  assert.deepEqual(
+    { a: payRow.amount, m: payRow.method, r: payRow.reference, p: payRow.plan, d: payRow.period_days, by: payRow.recorded_by, n: payRow.note },
+    { a: 999, m: "bkash", r: "ABC123XYZ", p: "standard", d: 30, by: user.id, n: "প্রথমবার" },
+  );
+  d = await daysLeft(r4);
+  assert.ok(d > 34.9 && d < 35.1, `৫ বাকি + ৩০ = ৩৫: ${d}`);
+  assert.equal(await planOf(r4), "standard");
+  await expectError(review(reqA, true), /already reviewed/i, "দ্বিতীয়বার অনুমোদন");
+  await expectError(review(reqA, false), /already reviewed/i, "অনুমোদিতকে বাতিল");
+  await expectError(review("00000000-0000-0000-0000-000000000000", true), /not found/i, "অচেনা অনুরোধ");
+  console.log("✓ review (অনুমোদন): খাতায় এন্ট্রি, মেয়াদ ৫+৩০=৩৫ দিন, প্ল্যান বদল; দ্বিতীয়বার/অচেনা ব্লক");
+
+  // বাতিল: কিছুই বদলায় না; TrxID আবার জমা দেওয়া যায়
+  const before = daysLeft;
+  const dBefore = await before(r4);
+  const rej = (await review(reqB, false, "টাকা আসেনি"))[0].r;
+  assert.equal(rej.status, "rejected");
+  assert.equal((await reqRow(reqB)).status, "rejected");
+  assert.equal((await reqRow(reqB)).payment_id, null);
+  assert.ok(Math.abs((await daysLeft(r4)) - dBefore) < 0.01, "বাতিলে মেয়াদ অপরিবর্তিত");
+  assert.equal(Number((await q<{ c: string }>("select count(*) c from payments where reference='ABC123XYZ' and method='nagad'"))[0].c), 0);
+  const [{ id: reqB2 }] = await submit("ABC123XYZ", "nagad"); // বাতিলের পর একই TrxID আবার জমা
+  assert.ok(reqB2 && reqB2 !== reqB);
+  console.log("✓ review (বাতিল): মেয়াদ/খাতা অপরিবর্তিত; বাতিলের পর একই TrxID আবার জমা যায়");
+
+  // অ্যাডমিন আগে হাতে রেকর্ড করে ফেলেছে → অনুমোদন 23505, অনুরোধ pending-ই থাকে
+  await pay(r4, 500, "basic", "rocket", "DEF456", 30);
+  const dMid = await daysLeft(r4);
+  await expectError(review(reqC, true), /duplicate key|unique/i, "খাতায় আগেই থাকা TrxID");
+  assert.equal((await reqRow(reqC)).status, "pending", "ব্যর্থ অনুমোদনে অনুরোধ pending-ই");
+  assert.ok(Math.abs((await daysLeft(r4)) - dMid) < 0.01, "ব্যর্থ অনুমোদনে মেয়াদ বাড়েনি");
+  await review(reqC, false, "ইতিমধ্যে রেকর্ডেড");
+  // মালিক এমন TrxID জমা দিতে পারে না যা খাতায় আছে
+  await expectError(submit("DEF456", "rocket"), /duplicate/i, "খাতায় থাকা TrxID জমা");
+  console.log("✓ খাতায় আগেই থাকা TrxID: অনুমোদন ব্যর্থ ও অনুরোধ pending, নতুন জমাও ব্লক");
+
+  // ---- রিমাইন্ডার ----
+  const mkOwner = async (email: string | null, slug: string, daysFromNow: number, active = true) => {
+    const [u] = await q<{ id: string | null }>(
+      email ? "insert into auth.users (email) values ($1) returning id" : "select null::uuid as id",
+      email ? [email] : [],
+    );
+    const [r] = await q<{ id: string }>(
+      "insert into restaurants (owner_id, name, slug, is_active, service_until) values ($1, $2, $2, $3, now() + make_interval(secs => $4)) returning id",
+      [u.id, slug, active, daysFromNow * 86400],
+    );
+    return r.id;
+  };
+  // বাকি পুরনো রেস্টুরেন্টগুলো আগে নিষ্ক্রিয় (শুধু এই অংশের গণনা আলাদা রাখতে)
+  await q("update restaurants set is_active = false");
+  const ids = {
+    d7: await mkOwner("d7@example.com", "rem-d7", 5),
+    d3: await mkOwner("d3@example.com", "rem-d3", 2),
+    d1: await mkOwner("d1@example.com", "rem-d1", 0.5),
+    exp: await mkOwner("exp@example.com", "rem-exp", -1),
+    oldExp: await mkOwner("old@example.com", "rem-old", -4),
+    far: await mkOwner("far@example.com", "rem-far", 20),
+    susp: await mkOwner("susp@example.com", "rem-susp", 2, false),
+    noOwner: await mkOwner(null, "rem-noowner", 2),
+  };
+  const due = async () =>
+    (await q<{ restaurant_id: string; kind: string; owner_email: string; service_until: string }>("select * from due_reminders()")).sort(
+      (a, b) => a.owner_email.localeCompare(b.owner_email),
+    );
+
+  let rows = await due();
+  assert.deepEqual(
+    rows.map((x) => `${x.owner_email}:${x.kind}`),
+    ["d1@example.com:d1", "d3@example.com:d3", "d7@example.com:d7", "exp@example.com:expired"],
+  );
+  console.log("✓ due_reminders: d7/d3/d1/expired সঠিক; ৩ দিনের বেশি আগে শেষ, দূরের মেয়াদ, স্থগিত, মালিকহীন বাদ");
+
+  const d3row = rows.find((x) => x.kind === "d3")!;
+  const claim = async (rid: string, kind: string, until: string) =>
+    (await q<{ r: boolean }>("select claim_reminder($1,$2,$3) as r", [rid, kind, until]))[0].r;
+  assert.equal(await claim(d3row.restaurant_id, "d3", d3row.service_until), true);
+  assert.equal(await claim(d3row.restaurant_id, "d3", d3row.service_until), false, "দ্বিতীয়বার দখল নয়");
+  const par = await Promise.all(Array.from({ length: 5 }, () => claim(ids.d7, "d7", rows.find((x) => x.kind === "d7")!.service_until)));
+  assert.equal(par.filter(Boolean).length, 1, "একসাথে ৫ cron-এ ঠিক ১টি দখল পায়");
+  rows = await due();
+  assert.deepEqual(rows.map((x) => x.kind).sort(), ["d1", "expired"], "দখল হওয়া বাদ");
+  await q("select release_reminder($1,$2,$3)", [d3row.restaurant_id, "d3", d3row.service_until]);
+  assert.ok((await due()).some((x) => x.kind === "d3"), "release করলে আবার due");
+
+  // নবায়নে মেয়াদ বদলালে নতুন চক্র: একই ধরন আবার পাঠানো যায়
+  const d7row = (await q<any>("select service_until from restaurants where id=$1", [ids.d7]))[0];
+  assert.ok(!(await due()).some((x) => x.kind === "d7"), "d7 দখলে আছে");
+  await q("update restaurants set service_until = now() + interval '6 days' where id=$1", [ids.d7]);
+  assert.ok((await due()).some((x) => x.kind === "d7"), "মেয়াদ বদলালে নতুন চক্র");
+  assert.notEqual(d7row.service_until, (await q<any>("select service_until from restaurants where id=$1", [ids.d7]))[0].service_until);
+  await expectError(claim(ids.d1, "bogus", d3row.service_until), /check|violates/i, "অবৈধ ধরন");
+  console.log("✓ claim/release_reminder: একবারই দখল, একসাথে ৫ cron-এ ১টি, release-এ ফেরে, নবায়নে নতুন চক্র");
 
   console.log("\nDB টেস্ট সব পাস ✅");
   await db.close();

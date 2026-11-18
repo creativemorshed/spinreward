@@ -9,8 +9,14 @@ import {
   pickWeightedIndex,
 } from "../src/lib/rewards";
 import { isValidSlug, isValidVisitorId, todayInDhaka } from "../src/lib/validation";
+import { clientIpHash, getClientIp, hashIp, normalizeIp } from "../src/lib/ip";
+import { LIMITS } from "../src/lib/limits";
+import { buildReminderEmail, escapeHtml, isReminderKind, readEmailConfig, type DueReminder } from "../src/lib/reminders";
 import {
   daysLeft,
+  isRenewalMonths,
+  isRequestMethod,
+  renewalQuote,
   isPaymentMethod,
   isPlan,
   isValidEmail,
@@ -117,5 +123,103 @@ assert.equal(isPlan("gold"), false);
 assert.equal(isPaymentMethod("bkash"), true);
 assert.equal(isPaymentMethod("paypal"), false);
 console.log("✓ plans: সাবস্ক্রিপশন অবস্থা, বাকি দিন, MRR, ইনপুট যাচাই");
+
+// 7) IP: হেডার, স্বাভাবিকীকরণ, হ্যাশ
+const reqWith = (h: Record<string, string>) => new Request("http://x.test/", { headers: h });
+assert.equal(getClientIp(reqWith({ "x-vercel-forwarded-for": "203.0.113.5", "x-forwarded-for": "9.9.9.9" })), "203.0.113.5", "Vercel হেডার আগে");
+assert.equal(getClientIp(reqWith({ "x-real-ip": "198.51.100.7", "x-forwarded-for": "9.9.9.9" })), "198.51.100.7");
+assert.equal(getClientIp(reqWith({ "x-forwarded-for": "9.9.9.9, 10.0.0.1" })), "9.9.9.9", "প্রথমটি");
+assert.equal(getClientIp(reqWith({ "x-forwarded-for": "not-an-ip" })), null, "অবৈধ IP বাদ");
+assert.equal(getClientIp(reqWith({ "x-vercel-forwarded-for": "junk", "x-real-ip": "198.51.100.7" })), "198.51.100.7", "অবৈধ হলে পরেরটি");
+assert.equal(getClientIp(reqWith({})), null);
+
+assert.equal(normalizeIp("203.0.113.5"), "203.0.113.5");
+assert.equal(normalizeIp("::ffff:203.0.113.5"), "203.0.113.5", "IPv4-mapped IPv6");
+assert.equal(
+  normalizeIp("2001:db8:abcd:12::1"),
+  normalizeIp("2001:0db8:abcd:0012:ffff:ffff:ffff:ffff"),
+  "একই /64 = একই (মোবাইল ক্যারিয়ারের ঠিকানা ঘোরানো)",
+);
+assert.notEqual(normalizeIp("2001:db8:abcd:12::1"), normalizeIp("2001:db8:abcd:13::1"), "ভিন্ন /64 আলাদা");
+assert.equal(normalizeIp("2001:db8::1"), normalizeIp("2001:0db8:0:0:0:0:0:1"), "সংক্ষিপ্ত রূপ = পূর্ণ রূপ");
+assert.equal(normalizeIp("::1"), normalizeIp("0:0:0:0:0:0:0:1"));
+assert.equal(normalizeIp("fe80::1%eth0"), normalizeIp("fe80::1"), "zone id বাদ");
+
+const h1 = hashIp("203.0.113.5", "salt-a");
+assert.match(h1, /^[0-9a-f]{32}$/);
+assert.equal(h1, hashIp("203.0.113.5", "salt-a"), "নির্ধারিত");
+assert.notEqual(h1, hashIp("203.0.113.5", "salt-b"), "সল্ট ভিন্ন হলে হ্যাশ ভিন্ন");
+assert.notEqual(h1, hashIp("203.0.113.6", "salt-a"));
+assert.ok(!h1.includes("203"), "হ্যাশে আসল IP নেই");
+assert.equal(hashIp("::ffff:203.0.113.5", "salt-a"), h1, "mapped IPv4 = সাধারণ IPv4");
+
+// IP পাওয়া না গেলে (লোকাল/অজানা প্রক্সি) হ্যাশ null — তখন IP-ভিত্তিক সব পরীক্ষা বাদ পড়ে
+assert.equal(clientIpHash(reqWith({})), null);
+assert.equal(clientIpHash(reqWith({ "x-forwarded-for": "junk" })), null);
+process.env.IP_HASH_SALT = "unit-salt";
+assert.equal(clientIpHash(reqWith({ "x-forwarded-for": "203.0.113.5" })), hashIp("203.0.113.5", "unit-salt"), "env সল্ট ব্যবহৃত");
+delete process.env.IP_HASH_SALT;
+
+// LIMITS — env ওভাররাইড ও অবৈধ মানে ডিফল্ট
+const saved = process.env.MAX_SPINS_PER_IP_PER_DAY;
+delete process.env.MAX_SPINS_PER_IP_PER_DAY;
+assert.equal(LIMITS.spinsPerIpPerDay, 100);
+process.env.MAX_SPINS_PER_IP_PER_DAY = "250";
+assert.equal(LIMITS.spinsPerIpPerDay, 250);
+for (const bad of ["abc", "2", "-5", "1.5", "99999999"]) {
+  process.env.MAX_SPINS_PER_IP_PER_DAY = bad;
+  assert.equal(LIMITS.spinsPerIpPerDay, 100, `অবৈধ "${bad}" → ডিফল্ট`);
+}
+if (saved === undefined) delete process.env.MAX_SPINS_PER_IP_PER_DAY;
+else process.env.MAX_SPINS_PER_IP_PER_DAY = saved;
+console.log("✓ ip: হেডারের ক্রম, IPv6 /64 ও mapped-IPv4 স্বাভাবিকীকরণ, সল্টযুক্ত হ্যাশ, সীমার env");
+
+// 8) নবায়ন হিসাব
+assert.deepEqual(renewalQuote("basic", 1), { amount: 499, periodDays: 30 });
+assert.deepEqual(renewalQuote("standard", 3), { amount: 2997, periodDays: 90 });
+assert.deepEqual(renewalQuote("premium", 12), { amount: 23988, periodDays: 360 });
+assert.equal(isRenewalMonths(6), true);
+assert.equal(isRenewalMonths(4), false);
+assert.equal(isRenewalMonths("1"), false);
+assert.equal(isRequestMethod("bkash"), true);
+assert.equal(isRequestMethod("cash"), false, "ক্যাশ শুধু অ্যাডমিন রেকর্ড করে");
+console.log("✓ renewalQuote: প্ল্যান × মাস, মেয়াদ ৩০ × মাস");
+
+// 9) রিমাইন্ডার ইমেইল
+const sample = (kind: DueReminder["kind"], name = "Sampan"): DueReminder => ({
+  restaurant_id: "r1",
+  name,
+  slug: "sampan",
+  owner_email: "o@example.com",
+  service_until: "2026-12-05T10:00:00Z",
+  kind,
+});
+const subjects = new Set<string>();
+for (const kind of ["d7", "d3", "d1", "expired"] as const) {
+  const m = buildReminderEmail(sample(kind), "https://app.example.com/");
+  assert.ok(m.subject.includes("Sampan"), kind);
+  assert.ok(m.html.includes("https://app.example.com/dashboard"), "ডাবল-স্ল্যাশ ছাড়া লিংক");
+  assert.ok(!m.html.includes("com//dashboard"));
+  assert.ok(m.text.includes("https://app.example.com/dashboard"));
+  assert.ok(m.html.includes("<b>Sampan</b>"));
+  subjects.add(m.subject);
+}
+assert.equal(subjects.size, 4, "চার ধরনের বিষয় আলাদা");
+assert.ok(buildReminderEmail(sample("expired"), "https://a.b").html.includes("বন্ধ"));
+const evil = buildReminderEmail(sample("d3", `<script>alert(1)</script> "Cafe" & 'Co'`), "https://a.b");
+assert.ok(!evil.html.includes("<script>"), "রেস্টুরেন্টের নামে HTML ইনজেকশন escape");
+assert.ok(evil.html.includes("&lt;script&gt;"));
+assert.equal(escapeHtml(`<a href="x">&'`), "&lt;a href=&quot;x&quot;&gt;&amp;&#39;");
+assert.equal(isReminderKind("d7"), true);
+assert.equal(isReminderKind("d30"), false);
+assert.equal(readEmailConfig({}), null);
+assert.equal(readEmailConfig({ RESEND_API_KEY: "k" }), null, "EMAIL_FROM ছাড়া নয়");
+assert.equal(readEmailConfig({ EMAIL_FROM: "a@b.c" }), null);
+assert.deepEqual(readEmailConfig({ RESEND_API_KEY: " k ", EMAIL_FROM: "A <a@b.c>" }), {
+  apiKey: "k",
+  from: "A <a@b.c>",
+  apiUrl: "https://api.resend.com/emails",
+});
+console.log("✓ reminders: ৪ ধরনের ইমেইল, লিংক, HTML escape, ইমেইল কনফিগ");
 
 console.log("\nসব টেস্ট পাস ✅");

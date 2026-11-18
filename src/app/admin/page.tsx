@@ -4,15 +4,17 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import OverviewTab from "@/components/admin/OverviewTab";
 import PaymentsTab from "@/components/admin/PaymentsTab";
+import RequestsTab from "@/components/admin/RequestsTab";
 import RestaurantsTab from "@/components/admin/RestaurantsTab";
 import { adminFetch } from "@/components/admin/adminApi";
 import { getBrowserClient } from "@/lib/supabase-browser";
-import type { AdminRestaurant, AdminStatsResponse } from "@/lib/types";
+import type { AdminPaymentRequest, AdminRestaurant, AdminStatsResponse } from "@/lib/types";
 
-type Tab = "overview" | "restaurants" | "payments";
+type Tab = "overview" | "restaurants" | "requests" | "payments";
 const TABS: { key: Tab; label: string }[] = [
   { key: "overview", label: "ওভারভিউ" },
   { key: "restaurants", label: "রেস্টুরেন্ট" },
+  { key: "requests", label: "অনুরোধ" },
   { key: "payments", label: "পেমেন্ট" },
 ];
 
@@ -27,6 +29,7 @@ export default function AdminPage() {
   const [stats, setStats] = useState<AdminStatsResponse | null>(null);
   const [restaurants, setRestaurants] = useState<AdminRestaurant[]>([]);
   const [payFor, setPayFor] = useState<string | null>(null);
+  const [pendingRequests, setPendingRequests] = useState(0);
 
   const load = useCallback(async () => {
     try {
@@ -38,9 +41,10 @@ export default function AdminPage() {
       }
       setToken(t);
 
-      const [statsRes, listRes] = await Promise.all([
+      const [statsRes, listRes, reqRes] = await Promise.all([
         adminFetch<AdminStatsResponse>(t, "/api/admin/stats"),
         adminFetch<{ restaurants: AdminRestaurant[] }>(t, "/api/admin/restaurants"),
+        adminFetch<{ requests: AdminPaymentRequest[] }>(t, "/api/admin/payment-requests?status=pending"),
       ]);
 
       // 401 = সেশন শেষ → আবার লগইন; 403 = লগইন আছে কিন্তু অ্যাডমিন নন
@@ -60,6 +64,8 @@ export default function AdminPage() {
 
       setStats(statsRes.data);
       setRestaurants(listRes.data.restaurants);
+      // অনুরোধের সংখ্যা ব্যাজের জন্য — এটা ব্যর্থ হলেও বাকি প্যানেল চলবে
+      setPendingRequests(reqRes.ok ? reqRes.data.requests.length : 0);
       setGate("ready");
     } catch {
       setMessage("ইন্টারনেট সংযোগ পরীক্ষা করুন");
@@ -140,6 +146,11 @@ export default function AdminPage() {
             }`}
           >
             {t.label}
+            {t.key === "requests" && pendingRequests > 0 && (
+              <span className="ml-1.5 rounded-full bg-amber-500 px-1.5 py-0.5 text-[11px] font-extrabold text-white">
+                {pendingRequests.toLocaleString("bn-BD")}
+              </span>
+            )}
           </button>
         ))}
       </div>
@@ -157,6 +168,7 @@ export default function AdminPage() {
             }}
           />
         )}
+        {tab === "requests" && <RequestsTab token={token} onChanged={() => void load()} />}
         {tab === "payments" && (
           <PaymentsTab token={token} restaurants={restaurants} preselect={payFor} onChanged={() => void load()} />
         )}
